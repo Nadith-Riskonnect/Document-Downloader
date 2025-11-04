@@ -118,6 +118,7 @@ namespace RiskDocumentDownloader
 
             using (SqlCommand command = new SqlCommand(query, connection))
             {
+                command.CommandTimeout = 300;
                 using (SqlDataReader reader = command.ExecuteReader())
                 {
                     int totalDocuments = 0;
@@ -230,6 +231,7 @@ namespace RiskDocumentDownloader
 
             using (SqlCommand command = new SqlCommand(query, connection))
             {
+                command.CommandTimeout = 300;
                 using (SqlDataReader reader = command.ExecuteReader())
                 {
                     int totalDocuments = 0;
@@ -261,7 +263,7 @@ namespace RiskDocumentDownloader
                             }
 
                             // Create subfolder for each incident
-                            string incidentFolderName = $"{incidentCode} - {incidentTitle}";
+                            string incidentFolderName = $"{incidentCode}";
                             if (currentIncidentCode != incidentCode)
                             {
                                 currentIncidentCode = incidentCode;
@@ -340,6 +342,7 @@ namespace RiskDocumentDownloader
 
             using (SqlCommand command = new SqlCommand(query, connection))
             {
+                command.CommandTimeout = 300;
                 using (SqlDataReader reader = command.ExecuteReader())
                 {
                     int totalDocuments = 0;
@@ -431,6 +434,7 @@ namespace RiskDocumentDownloader
 
             using (SqlCommand command = new SqlCommand(query, connection))
             {
+                command.CommandTimeout = 300;
                 using (SqlDataReader reader = command.ExecuteReader())
                 {
                     int totalDocuments = 0;
@@ -501,12 +505,40 @@ namespace RiskDocumentDownloader
 
         static string SanitizeFolderName(string name)
         {
+            if (string.IsNullOrWhiteSpace(name))
+                return "Unknown";
+
+            // Trim leading/trailing whitespace
+            name = name.Trim();
+
+            // Replace invalid path characters
             char[] invalidChars = Path.GetInvalidPathChars();
             foreach (char c in invalidChars)
             {
                 name = name.Replace(c, '_');
             }
-            return name.Replace("/", "_").Replace("\\", "_").Replace(":", "_");
+
+            // Replace additional problematic characters
+            name = name.Replace("/", "_")
+                       .Replace("\\", "_")
+                       .Replace(":", "_")
+                       .Replace("*", "_")
+                       .Replace("?", "_")
+                       .Replace("\"", "_")
+                       .Replace("<", "_")
+                       .Replace(">", "_")
+                       .Replace("|", "_");
+
+            // Limit folder name length to prevent path length issues
+            if (name.Length > 100)
+            {
+                name = name.Substring(0, 100);
+            }
+
+            // Trim again in case truncation added trailing spaces
+            name = name.Trim();
+
+            return name;
         }
 
         static string SanitizeFileName(string fileName)
