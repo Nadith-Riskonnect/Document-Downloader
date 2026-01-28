@@ -64,6 +64,21 @@ namespace RiskDocumentDownloader
                     // Process Action Documents
                     ProcessActionDocuments(connection, outputFolder);
 
+                    //Process Compliance Documents
+                    ProcessComplianceDocuments(connection, outputFolder);
+
+                    //Process Audit Recommendation Documents
+                    ProcessAuditRecommendationDocuments(connection, outputFolder);
+
+                    //Process Audit Details Documents
+                    ProcessAuditDetailsDocuments(connection, outputFolder);
+
+                    //Process Audit Finding Documents
+                    ProcessAuditFindingDocuments(connection, outputFolder);
+
+                    // Process Policy Documents
+                    ProcessPolicyDocuments(connection, outputFolder);
+
                     Console.WriteLine("\n" + new string('=', 50));
                     Console.WriteLine("All downloads complete!");
                     Console.WriteLine($"Output Folder: {outputFolder}");
@@ -501,6 +516,643 @@ namespace RiskDocumentDownloader
                     Console.WriteLine($"\nAction Documents - Total: {totalDocuments}, Success: {successCount}, Failed: {failCount}");
                 }
             }
+        }
+
+        static void ProcessComplianceDocuments(SqlConnection connection, string baseFolder)
+        {
+            Console.WriteLine("\n" + new string('=', 50));
+            Console.WriteLine("PROCESSING COMPLIANCE & ENTITY DOCUMENTS");
+            Console.WriteLine(new string('=', 50));
+
+            string query = @"
+        SELECT
+        CASE 
+         WHEN I.IncidentID IS NOT NULL
+          THEN 'Incident_Linked_Compliance_Documents' 
+         WHEN C.ComplianceId IS NOT NULL
+          THEN 'Compliance' 
+         WHEN AD.AuthorityDocumentId IS NOT NULL
+          THEN 'AuthorityDocument' 
+         WHEN P.PolicyId IS NOT NULL
+          THEN 'Policy' 
+        END AS 'ApplicationFolderName',
+        CASE 
+         WHEN I.IncidentID IS NOT NULL
+          THEN I.IncidentCode + ' - ' + I.IncidentTitle 
+         WHEN C.ComplianceId IS NOT NULL
+          THEN C.Code + ' - ' + C.Title 
+         WHEN AD.AuthorityDocumentId IS NOT NULL
+          THEN AD.Code + ' - ' + AD.Title 
+         WHEN P.PolicyId IS NOT NULL
+          THEN P.Code + ' - ' + P.Title 
+        END AS 'EntityFolderName',
+        [FILE],
+        FilePath
+        FROM EntityDocument ED
+        LEFT OUTER JOIN Incident I ON ED.ObjectDataId = I.IncidentID AND ED.IMSApplicationID = 1
+        LEFT OUTER JOIN Compliance C ON ED.ObjectDataId = C.ComplianceID AND ED.IMSApplicationID = 2 AND IMSSubApplicationID = 3
+        LEFT OUTER JOIN AuthorityDocument AD ON ED.ObjectDataId = AD.AuthorityDocumentID AND ED.IMSApplicationID = 2 AND IMSSubApplicationID = 4
+        LEFT OUTER JOIN Policy P ON ED.ObjectDataId = P.PolicyID AND ED.IMSApplicationID = 2 AND IMSSubApplicationID = 5
+        WHERE ED.[File] IS NOT NULL AND ED.IsDeleted = 0
+        ORDER BY ApplicationFolderName, EntityFolderName";
+
+            using (SqlCommand command = new SqlCommand(query, connection))
+            {
+                command.CommandTimeout = 300;
+                using (SqlDataReader reader = command.ExecuteReader())
+                {
+                    int totalDocuments = 0;
+                    int successCount = 0;
+                    int failCount = 0;
+                    string currentEntity = "";
+
+                    while (reader.Read())
+                    {
+                        totalDocuments++;
+
+                        try
+                        {
+                            string applicationFolder = reader["ApplicationFolderName"]?.ToString();
+                            string entityFolder = reader["EntityFolderName"]?.ToString();
+                            string filePath = reader["FilePath"]?.ToString();
+                            byte[] fileData = reader["FILE"] as byte[];
+
+                            if (fileData == null || fileData.Length == 0)
+                            {
+                                Console.WriteLine($"  ⚠ Skipping document - No file data");
+                                failCount++;
+                                continue;
+                            }
+
+                            if (string.IsNullOrWhiteSpace(applicationFolder) || string.IsNullOrWhiteSpace(entityFolder))
+                            {
+                                Console.WriteLine($"  ⚠ Skipping document - Missing folder information");
+                                failCount++;
+                                continue;
+                            }
+
+                            string entityIdentifier = $"{applicationFolder}/{entityFolder}";
+
+                            if (currentEntity != entityIdentifier)
+                            {
+                                currentEntity = entityIdentifier;
+                                Console.WriteLine($"\n📁 Processing: {applicationFolder} → {entityFolder}");
+                            }
+
+                            // Create nested folder: ApplicationFolder → EntityFolder
+                            string appFolder = Path.Combine(baseFolder, SanitizeFolderName(applicationFolder));
+                            if (!Directory.Exists(appFolder))
+                            {
+                                Directory.CreateDirectory(appFolder);
+                            }
+
+                            string entityPath = Path.Combine(appFolder, SanitizeFolderName(entityFolder));
+                            if (!Directory.Exists(entityPath))
+                            {
+                                Directory.CreateDirectory(entityPath);
+                            }
+
+                            // Extract filename from FilePath
+                            string fileName = Path.GetFileName(filePath);
+                            if (string.IsNullOrWhiteSpace(fileName))
+                            {
+                                fileName = $"document_{totalDocuments}";
+                            }
+
+                            if (!Path.HasExtension(fileName))
+                            {
+                                fileName += ".bin";
+                            }
+
+                            fileName = SanitizeFileName(fileName);
+                            string fullPath = Path.Combine(entityPath, fileName);
+                            fullPath = GetUniqueFilePath(fullPath);
+
+                            File.WriteAllBytes(fullPath, fileData);
+
+                            Console.WriteLine($"  Downloaded: {fileName} ({FormatFileSize(fileData.Length)})");
+                            successCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"  Error downloading document: {ex.Message}");
+                            failCount++;
+                        }
+                    }
+
+                    Console.WriteLine($"\nCompliance Documents - Total: {totalDocuments}, Success: {successCount}, Failed: {failCount}");
+                }
+            }
+        }
+
+        static void ProcessAuditRecommendationDocuments(SqlConnection connection, string baseFolder)
+        {
+            Console.WriteLine("\n" + new string('=', 50));
+            Console.WriteLine("PROCESSING AUDIT RECOMMENDATION DOCUMENTS");
+            Console.WriteLine(new string('=', 50));
+
+            string auditFolder = Path.Combine(baseFolder, "Audit_Recommendations");
+            if (!Directory.Exists(auditFolder))
+            {
+                Directory.CreateDirectory(auditFolder);
+            }
+
+            // Simplified query - just link AUDITRECOMMENDATION to Attachment
+            string query = @"
+        SELECT
+            AR.RECOMMENDATIONID,
+            AR.RECOMMENDATIONNO,
+            AR.RECOMMENDATIONTITLE,
+            A.AttachmentID,
+            A.Title,
+            A.DocumentURL,
+            A.FileData,
+            A.ContentType
+        FROM AUDITRECOMMENDATION AR
+        INNER JOIN Attachment A 
+            ON AR.RECOMMENDATIONID = A.ObjectID
+        WHERE A.FileData IS NOT NULL 
+            AND (A.Deleted IS NULL OR A.Deleted = 0)
+        ORDER BY AR.RECOMMENDATIONNO";
+
+            using (SqlCommand command = new SqlCommand(query, connection))
+            {
+                command.CommandTimeout = 300;
+                using (SqlDataReader reader = command.ExecuteReader())
+                {
+                    int totalDocuments = 0;
+                    int successCount = 0;
+                    int failCount = 0;
+                    string currentRecommendation = "";
+
+                    while (reader.Read())
+                    {
+                        totalDocuments++;
+                        Guid attachmentId = Guid.Empty;
+
+                        try
+                        {
+                            string recommendationNo = reader["RECOMMENDATIONNO"]?.ToString() ?? "Unknown";
+                            string recommendationTitle = reader["RECOMMENDATIONTITLE"]?.ToString() ?? "Untitled";
+                            attachmentId = reader.GetGuid(reader.GetOrdinal("AttachmentID"));
+                            string title = reader["Title"]?.ToString() ?? "Untitled";
+                            string documentUrl = reader["DocumentURL"]?.ToString();
+                            byte[] fileData = reader["FileData"] as byte[];
+                            string contentType = reader["ContentType"]?.ToString();
+
+                            if (fileData == null || fileData.Length == 0)
+                            {
+                                Console.WriteLine($"  ⚠ Skipping Attachment ID {attachmentId} - No file data");
+                                failCount++;
+                                continue;
+                            }
+
+                            string recommendationIdentifier = $"{recommendationNo} - {recommendationTitle}";
+
+                            if (currentRecommendation != recommendationIdentifier)
+                            {
+                                currentRecommendation = recommendationIdentifier;
+                                Console.WriteLine($"\n📁 Processing Recommendation: {recommendationIdentifier}");
+                            }
+
+                            // Create folder: Recommendation_No_Title
+                            string recommendationFolder = Path.Combine(auditFolder, SanitizeFolderName($"Recommendation_{recommendationNo}_{recommendationTitle}"));
+                            if (!Directory.Exists(recommendationFolder))
+                            {
+                                Directory.CreateDirectory(recommendationFolder);
+                            }
+
+                            // Determine filename
+                            string fileName;
+                            if (!string.IsNullOrWhiteSpace(documentUrl))
+                            {
+                                fileName = Path.GetFileName(documentUrl);
+                            }
+                            else if (!string.IsNullOrWhiteSpace(title))
+                            {
+                                fileName = title;
+                            }
+                            else
+                            {
+                                fileName = $"attachment_{attachmentId}";
+                            }
+
+                            // Add extension if missing
+                            if (!Path.HasExtension(fileName))
+                            {
+                                fileName += GetExtensionFromContentType(contentType);
+                            }
+
+                            fileName = SanitizeFileName(fileName);
+                            string filePath = Path.Combine(recommendationFolder, fileName);
+                            filePath = GetUniqueFilePath(filePath);
+
+                            File.WriteAllBytes(filePath, fileData);
+
+                            Console.WriteLine($"  Downloaded: {fileName} ({FormatFileSize(fileData.Length)})");
+                            successCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"  Error downloading document: {ex.Message}");
+                            failCount++;
+                        }
+                    }
+
+                    Console.WriteLine($"\nAudit Recommendation Documents - Total: {totalDocuments}, Success: {successCount}, Failed: {failCount}");
+                }
+            }
+        }
+
+        static void ProcessAuditDetailsDocuments(SqlConnection connection, string baseFolder)
+        {
+            Console.WriteLine("\n" + new string('=', 50));
+            Console.WriteLine("PROCESSING AUDIT DETAILS DOCUMENTS");
+            Console.WriteLine(new string('=', 50));
+
+            // Create a specific base folder for these documents
+            string auditFolder = Path.Combine(baseFolder, "Audit_Details_Attachments");
+            if (!Directory.Exists(auditFolder))
+            {
+                Directory.CreateDirectory(auditFolder);
+            }
+
+            // Query joins AUDITDETAIL with Attachment on AuditDetailID = ObjectID
+            string query = @"
+        SELECT
+            AD.AuditDetailID,
+            AD.AuditNo,
+            AD.AuditTitle,
+            A.AttachmentID,
+            A.Title,
+            A.DocumentURL,
+            A.FileData,
+            A.ContentType
+        FROM AUDITDETAIL AD
+        INNER JOIN Attachment A 
+            ON AD.AuditDetailID = A.ObjectID
+        WHERE A.FileData IS NOT NULL 
+            AND (A.Deleted IS NULL OR A.Deleted = 0)
+        ORDER BY AD.AuditNo";
+
+            using (SqlCommand command = new SqlCommand(query, connection))
+            {
+                command.CommandTimeout = 300;
+                using (SqlDataReader reader = command.ExecuteReader())
+                {
+                    int totalDocuments = 0;
+                    int successCount = 0;
+                    int failCount = 0;
+                    string currentAudit = "";
+
+                    while (reader.Read())
+                    {
+                        totalDocuments++;
+                        Guid attachmentId = Guid.Empty;
+
+                        try
+                        {
+                            string auditNo = reader["AuditNo"]?.ToString() ?? "Unknown";
+                            string auditTitle = reader["AuditTitle"]?.ToString() ?? "Untitled";
+                            attachmentId = reader.GetGuid(reader.GetOrdinal("AttachmentID"));
+                            string title = reader["Title"]?.ToString() ?? "Untitled";
+                            string documentUrl = reader["DocumentURL"]?.ToString();
+                            byte[] fileData = reader["FileData"] as byte[];
+                            string contentType = reader["ContentType"]?.ToString();
+
+                            if (fileData == null || fileData.Length == 0)
+                            {
+                                Console.WriteLine($"  ⚠ Skipping Attachment ID {attachmentId} - No file data");
+                                failCount++;
+                                continue;
+                            }
+
+                            string auditIdentifier = $"{auditNo} - {auditTitle}";
+                            if (currentAudit != auditIdentifier)
+                            {
+                                currentAudit = auditIdentifier;
+                                Console.WriteLine($"\n📁 Processing Audit: {auditIdentifier}");
+                            }
+
+                            // Create folder structure: AuditNo_AuditTitle
+                            string auditSubFolder = Path.Combine(auditFolder, SanitizeFolderName($"{auditNo}_{auditTitle}"));
+                            if (!Directory.Exists(auditSubFolder))
+                            {
+                                Directory.CreateDirectory(auditSubFolder);
+                            }
+
+                            // Determine filename
+                            string fileName;
+                            if (!string.IsNullOrWhiteSpace(documentUrl))
+                            {
+                                fileName = Path.GetFileName(documentUrl);
+                            }
+                            else if (!string.IsNullOrWhiteSpace(title))
+                            {
+                                fileName = title;
+                            }
+                            else
+                            {
+                                fileName = $"attachment_{attachmentId}";
+                            }
+
+                            if (!Path.HasExtension(fileName))
+                            {
+                                fileName += GetExtensionFromContentType(contentType);
+                            }
+
+                            fileName = SanitizeFileName(fileName);
+                            string filePath = Path.Combine(auditSubFolder, fileName);
+                            filePath = GetUniqueFilePath(filePath);
+
+                            File.WriteAllBytes(filePath, fileData);
+
+                            Console.WriteLine($"  Downloaded: {fileName} ({FormatFileSize(fileData.Length)})");
+                            successCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"  Error downloading document: {ex.Message}");
+                            failCount++;
+                        }
+                    }
+                    Console.WriteLine($"\nAudit Details Documents - Total: {totalDocuments}, Success: {successCount}, Failed: {failCount}");
+                }
+            }
+        }
+
+        static void ProcessAuditFindingDocuments(SqlConnection connection, string baseFolder)
+        {
+            Console.WriteLine("\n" + new string('=', 50));
+            Console.WriteLine("PROCESSING AUDIT FINDING DOCUMENTS");
+            Console.WriteLine(new string('=', 50));
+
+            string auditFolder = Path.Combine(baseFolder, "Audit_Finding_Attachments");
+            if (!Directory.Exists(auditFolder))
+            {
+                Directory.CreateDirectory(auditFolder);
+            }
+
+            // Query joins AUDITFINDING with AUDITDETAIL to get audit info, then with Attachment
+            string query = @"
+        SELECT
+            AF.AuditFindingID,
+            AF.AuditFindingNo,
+            AD.AuditNo,
+            AD.AuditTitle,
+            A.AttachmentID,
+            A.Title,
+            A.DocumentURL,
+            A.FileData,
+            A.ContentType
+        FROM AUDITFINDING AF
+        INNER JOIN AUDITDETAIL AD ON AF.AuditDetailID = AD.AuditDetailID
+        INNER JOIN Attachment A ON AF.AuditFindingID = A.ObjectID
+        WHERE A.FileData IS NOT NULL 
+            AND (A.Deleted IS NULL OR A.Deleted = 0)
+        ORDER BY AD.AuditNo, AF.AuditFindingNo";
+
+            using (SqlCommand command = new SqlCommand(query, connection))
+            {
+                command.CommandTimeout = 300;
+                using (SqlDataReader reader = command.ExecuteReader())
+                {
+                    int totalDocuments = 0;
+                    int successCount = 0;
+                    int failCount = 0;
+                    string currentAudit = "";
+
+                    while (reader.Read())
+                    {
+                        totalDocuments++;
+                        Guid attachmentId = Guid.Empty;
+
+                        try
+                        {
+                            string auditNo = reader["AuditNo"]?.ToString() ?? "Unknown";
+                            string auditTitle = reader["AuditTitle"]?.ToString() ?? "Untitled";
+                            string findingNo = reader["AuditFindingNo"]?.ToString() ?? "N/A";
+                            attachmentId = reader.GetGuid(reader.GetOrdinal("AttachmentID"));
+                            string title = reader["Title"]?.ToString() ?? "Untitled";
+                            string documentUrl = reader["DocumentURL"]?.ToString();
+                            byte[] fileData = reader["FileData"] as byte[];
+                            string contentType = reader["ContentType"]?.ToString();
+
+                            if (fileData == null || fileData.Length == 0)
+                            {
+                                Console.WriteLine($"  ⚠ Skipping Attachment ID {attachmentId} - No file data");
+                                failCount++;
+                                continue;
+                            }
+
+                            string auditIdentifier = $"{auditNo} - {auditTitle}";
+                            if (currentAudit != auditIdentifier)
+                            {
+                                currentAudit = auditIdentifier;
+                                Console.WriteLine($"\n📁 Processing Audit: {auditIdentifier}");
+                            }
+
+                            // Create folder structure: AuditNo_AuditTitle → Finding_XX
+                            string auditSubFolder = Path.Combine(auditFolder, SanitizeFolderName($"{auditNo}_{auditTitle}"));
+                            if (!Directory.Exists(auditSubFolder))
+                            {
+                                Directory.CreateDirectory(auditSubFolder);
+                            }
+
+                            string findingFolder = Path.Combine(auditSubFolder, SanitizeFolderName($"Finding_{findingNo}"));
+                            if (!Directory.Exists(findingFolder))
+                            {
+                                Directory.CreateDirectory(findingFolder);
+                            }
+
+                            // Determine filename
+                            string fileName;
+                            if (!string.IsNullOrWhiteSpace(documentUrl))
+                            {
+                                fileName = Path.GetFileName(documentUrl);
+                            }
+                            else if (!string.IsNullOrWhiteSpace(title))
+                            {
+                                fileName = title;
+                            }
+                            else
+                            {
+                                fileName = $"attachment_{attachmentId}";
+                            }
+
+                            if (!Path.HasExtension(fileName))
+                            {
+                                fileName += GetExtensionFromContentType(contentType);
+                            }
+
+                            fileName = SanitizeFileName(fileName);
+                            string filePath = Path.Combine(findingFolder, fileName);
+                            filePath = GetUniqueFilePath(filePath);
+
+                            File.WriteAllBytes(filePath, fileData);
+
+                            Console.WriteLine($"  Downloaded: Finding {findingNo} / {fileName} ({FormatFileSize(fileData.Length)})");
+                            successCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"  Error downloading document: {ex.Message}");
+                            failCount++;
+                        }
+                    }
+                    Console.WriteLine($"\nAudit Finding Documents - Total: {totalDocuments}, Success: {successCount}, Failed: {failCount}");
+                }
+            }
+        }
+
+        static void ProcessPolicyDocuments(SqlConnection connection, string baseFolder)
+        {
+            Console.WriteLine("\n" + new string('=', 50));
+            Console.WriteLine("PROCESSING POLICY DOCUMENTS");
+            Console.WriteLine(new string('=', 50));
+
+            string policyFolder = Path.Combine(baseFolder, "Policy");
+            if (!Directory.Exists(policyFolder))
+            {
+                Directory.CreateDirectory(policyFolder);
+            }
+
+            string query = @"
+        SELECT
+            P.PolicyId,
+            P.Code,
+            P.Title,
+            ED.DocumentId,
+            ED.Name AS DocumentName,
+            ED.FilePath,
+            ED.[File] AS FileData
+        FROM Policy P
+        INNER JOIN EntityDocument ED 
+            ON P.ObjectId = ED.ObjectId
+        WHERE ED.[File] IS NOT NULL 
+            AND (ED.IsDeleted IS NULL OR ED.IsDeleted = 0)
+            AND (P.IsDeleted IS NULL OR P.IsDeleted = 0)
+        ORDER BY P.Code, P.Title";
+
+            using (SqlCommand command = new SqlCommand(query, connection))
+            {
+                command.CommandTimeout = 300;
+
+                try
+                {
+                    using (SqlDataReader reader = command.ExecuteReader())
+                    {
+                        int totalDocuments = 0;
+                        int successCount = 0;
+                        int failCount = 0;
+                        string currentPolicy = "";
+
+                        while (reader.Read())
+                        {
+                            totalDocuments++;
+
+                            try
+                            {
+                                int policyId = reader.GetInt32(reader.GetOrdinal("PolicyId"));
+                                string code = reader["Code"]?.ToString() ?? "Unknown";
+                                string title = reader["Title"]?.ToString() ?? "Untitled";
+                                int documentId = reader.GetInt32(reader.GetOrdinal("DocumentId"));
+                                string documentName = reader["DocumentName"]?.ToString();
+                                string filePath = reader["FilePath"]?.ToString();
+                                byte[] fileData = reader["FileData"] as byte[];
+
+                                if (fileData == null || fileData.Length == 0)
+                                {
+                                    Console.WriteLine($"  ⚠ Skipping Document ID {documentId} - No file data");
+                                    failCount++;
+                                    continue;
+                                }
+
+                                string policyIdentifier = $"{code} - {title}";
+
+                                if (currentPolicy != policyIdentifier)
+                                {
+                                    currentPolicy = policyIdentifier;
+                                    Console.WriteLine($"\n📁 Processing Policy: {policyIdentifier}");
+                                }
+
+                                // Create folder: Policy → Code_Title
+                                string policySubFolder = Path.Combine(policyFolder, SanitizeFolderName($"{code}_{title}"));
+                                if (!Directory.Exists(policySubFolder))
+                                {
+                                    Directory.CreateDirectory(policySubFolder);
+                                }
+
+                                // Determine filename
+                                string fileName;
+                                if (!string.IsNullOrWhiteSpace(filePath))
+                                {
+                                    // Extract filename from FilePath
+                                    fileName = Path.GetFileName(filePath);
+                                }
+                                else if (!string.IsNullOrWhiteSpace(documentName))
+                                {
+                                    fileName = documentName;
+                                }
+                                else
+                                {
+                                    fileName = $"policy_document_{documentId}";
+                                }
+
+                                // Add extension if missing
+                                if (!Path.HasExtension(fileName))
+                                {
+                                    fileName += ".bin";
+                                }
+
+                                fileName = SanitizeFileName(fileName);
+                                string fullPath = Path.Combine(policySubFolder, fileName);
+                                fullPath = GetUniqueFilePath(fullPath);
+
+                                File.WriteAllBytes(fullPath, fileData);
+
+                                Console.WriteLine($"  Downloaded: {fileName} ({FormatFileSize(fileData.Length)})");
+                                successCount++;
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"  Error downloading document: {ex.Message}");
+                                failCount++;
+                            }
+                        }
+
+                        Console.WriteLine($"\nPolicy Documents - Total: {totalDocuments}, Success: {successCount}, Failed: {failCount}");
+                    }
+                }
+                catch (SqlException ex)
+                {
+                    Console.WriteLine($"\n❌ SQL Error: {ex.Message}");
+                    Console.WriteLine("Error accessing Policy or EntityDocument table.");
+                }
+            }
+        }
+
+        static string GetExtensionFromContentType(string contentType)
+        {
+            if (string.IsNullOrWhiteSpace(contentType))
+                return ".bin";
+
+            return contentType.ToLower() switch
+            {
+                "application/pdf" => ".pdf",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => ".docx",
+                "application/msword" => ".doc",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => ".xlsx",
+                "application/vnd.ms-excel" => ".xls",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation" => ".pptx",
+                "application/vnd.ms-powerpoint" => ".ppt",
+                "image/jpeg" => ".jpg",
+                "image/png" => ".png",
+                "image/gif" => ".gif",
+                "text/plain" => ".txt",
+                "text/csv" => ".csv",
+                _ => ".bin"
+            };
         }
 
         static string SanitizeFolderName(string name)
